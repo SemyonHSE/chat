@@ -1,0 +1,8 @@
+# CLion specific
+.idea/
+*.iml
+CMakeLists.txt.user
+cmake-build-*/
+cmake-build-debug/
+# Compiled binaries
+/bin/
