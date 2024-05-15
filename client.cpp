@@ -30,7 +30,8 @@ int main(int argc, const char** argv) {
 
     SOCKET sock;
     struct sockaddr_in serv_addr;
-
+    // argc -  количество аргументов, переданных программе через командную строку при ее запуске
+    // argv[0] будет содержать "./client.exe", а argv[1] будет содержать "client_name" - всего 2 элемента
     if (argc != 2) {
         error_output("Usage : %s <Name> \n", argv[0]);
         return 1;
@@ -39,7 +40,7 @@ int main(int argc, const char** argv) {
     // Устанавливаем имя клиента
     name = "[" + std::string(argv[1]) + "]";
 
-    // Создаем сокет для TCP-соединения
+    // Создаем сокет для клиента для TCP-соединения
     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) {
         error_handling("socket() failed!");

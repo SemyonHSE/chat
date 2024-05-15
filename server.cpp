@@ -8,7 +8,7 @@
 #include <string>
 //#pragma comment(lib, 'ws2_32.lib');
 #define SERVER_PORT 5208 // Порт сервера
-#define BUF_SIZE 1024
+#define BUF_SIZE 1024  //буфер будет иметь размер 1024 байта
 #define MAX_CLNT 256    // Максимальное количество подключений
 
 void handle_clnt(SOCKET clnt_sock);
@@ -22,28 +22,27 @@ std::mutex mtx;
 std::unordered_map<std::string, SOCKET> clnt_socks;
 
 int main(int argc, const char** argv) {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    //Запуск программных интерфейсов для работы с сокетами
+    WSADATA wsaData;// объект, в который автоматически в момент создания загружаются данные о версии сокетов, используемых ОС, а также иная связанная системная информация
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {//вызов функции запуска сокетов (WORD <запрашиваемая версия сокетов>, WSADATA* <указатель на структуру, хранящую текущую версию реализации сокетов>)
         error_handling("WSAStartup() failed!");
         return 1;
     }
 
-    SOCKET serv_sock, clnt_sock;
-    struct sockaddr_in serv_addr, clnt_addr;
-    int clnt_addr_size;
-
-    // Создаем сокет для TCP-соединения
-    serv_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    // Создание сокета и его инициализация
+    SOCKET serv_sock;
+    serv_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);//создание сокета
     if (serv_sock == INVALID_SOCKET) {
         error_handling("socket() failed!");
         return 1;
     }
 
     // Заполняем структуру адреса сервера
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    serv_addr.sin_port = htons(SERVER_PORT);
+    struct sockaddr_in serv_addr, clnt_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));// ункция используется для заполнения структуры serv_addr нулями, чтобы избежать возможного появления мусорных данных.
+    serv_addr.sin_family = AF_INET;// установка семейства адресов
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);// устанавливает IP-адрес сервера, INADDR_ANY позволяет серверу быть доступным для подключений по всем сетевым интерфейсам и адресам на машине, а не только по конкретному IP-адресу
+    serv_addr.sin_port = htons(SERVER_PORT);// устанавливает порт сервера (инициализировали в самом начале)
 
     // Привязываем сокет к адресу
     if (bind(serv_sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) == SOCKET_ERROR) {
@@ -59,15 +58,18 @@ int main(int argc, const char** argv) {
         return 1;
     }
 
+    SOCKET clnt_sock;
+    int clnt_addr_size;
     while (1) {
         clnt_addr_size = sizeof(clnt_addr);
         // Принимаем входящее подключение
-        clnt_sock = accept(serv_sock, (struct sockaddr*)&clnt_addr, &clnt_addr_size);
+        clnt_sock = accept(serv_sock, (struct sockaddr*)&clnt_addr, &clnt_addr_size);// возвращает дескриптор клиента
         if (clnt_sock == INVALID_SOCKET) {
             error_handling("accept() failed!");
             continue;
         }
 
+        // Этот код использует объект std::mutex для обеспечения потокобезопасного доступа к общему ресурсу clnt_cnt
         mtx.lock();
         clnt_cnt++;
         mtx.unlock();
