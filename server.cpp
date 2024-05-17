@@ -2,17 +2,20 @@
 #include <cstring>
 #include <thread>
 #include <mutex>
-#include <cstdlib>
 #include <WinSock2.h>
 #include <unordered_map>
 #include <string>
-//#pragma comment(lib, 'ws2_32.lib');
+#include <fstream>
+
 #define SERVER_PORT 5208 // Порт сервера
 #define BUF_SIZE 1024  //буфер будет иметь размер 1024 байта
 #define MAX_CLNT 256    // Максимальное количество подключений
+#define HISTORY_FILE "chat_history.txt" // Файл для хранения истории сообщений
 
 void handle_clnt(SOCKET clnt_sock);
 void send_msg(const std::string& msg);
+void save_msg_to_history(const std::string& msg);
+std::string get_chat_history();
 int output(const char* arg, ...);
 int error_output(const char* arg, ...);
 void error_handling(const std::string& message);
@@ -23,28 +26,25 @@ std::unordered_map<std::string, SOCKET> clnt_socks;
 
 int main(int argc, const char** argv) {
     //Запуск программных интерфейсов для работы с сокетами
-    WSADATA wsaData;// объект, в который автоматически в момент создания загружаются данные о версии сокетов, используемых ОС, а также иная связанная системная информация
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {//вызов функции запуска сокетов (WORD <запрашиваемая версия сокетов>, WSADATA* <указатель на структуру, хранящую текущую версию реализации сокетов>)
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         error_handling("WSAStartup() failed!");
         return 1;
     }
 
-    // Создание сокета и его инициализация
     SOCKET serv_sock;
-    serv_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);//создание сокета
+    serv_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (serv_sock == INVALID_SOCKET) {
         error_handling("socket() failed!");
         return 1;
     }
 
-    // Заполняем структуру адреса сервера
     struct sockaddr_in serv_addr, clnt_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));// ункция используется для заполнения структуры serv_addr нулями, чтобы избежать возможного появления мусорных данных.
-    serv_addr.sin_family = AF_INET;// установка семейства адресов
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);// устанавливает IP-адрес сервера, INADDR_ANY позволяет серверу быть доступным для подключений по всем сетевым интерфейсам и адресам на машине, а не только по конкретному IP-адресу
-    serv_addr.sin_port = htons(SERVER_PORT);// устанавливает порт сервера (инициализировали в самом начале)
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_addr.sin_port = htons(SERVER_PORT);
 
-    // Привязываем сокет к адресу
     if (bind(serv_sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) == SOCKET_ERROR) {
         error_handling("bind() failed!");
         return 1;
@@ -52,7 +52,6 @@ int main(int argc, const char** argv) {
 
     printf("The server is running on port %d\n", SERVER_PORT);
 
-    // Слушаем входящие подключения
     if (listen(serv_sock, MAX_CLNT) == SOCKET_ERROR) {
         error_handling("listen() error!");
         return 1;
@@ -62,19 +61,16 @@ int main(int argc, const char** argv) {
     int clnt_addr_size;
     while (1) {
         clnt_addr_size = sizeof(clnt_addr);
-        // Принимаем входящее подключение
-        clnt_sock = accept(serv_sock, (struct sockaddr*)&clnt_addr, &clnt_addr_size);// возвращает дескриптор клиента
+        clnt_sock = accept(serv_sock, (struct sockaddr*)&clnt_addr, &clnt_addr_size);
         if (clnt_sock == INVALID_SOCKET) {
             error_handling("accept() failed!");
             continue;
         }
 
-        // Этот код использует объект std::mutex для обеспечения потокобезопасного доступа к общему ресурсу clnt_cnt
         mtx.lock();
         clnt_cnt++;
         mtx.unlock();
 
-        // Создаем поток для обработки клиента
         std::thread th(handle_clnt, clnt_sock);
         th.detach();
 
@@ -88,56 +84,67 @@ int main(int argc, const char** argv) {
 
 void handle_clnt(SOCKET clnt_sock) {
     char msg[BUF_SIZE];
-    int flag = 0;
+    bool quit_flag = false;
 
     char tell_name[13] = "#new client:";
-    while (recv(clnt_sock, msg, sizeof(msg), 0) != 0) {
+    while (!quit_flag && recv(clnt_sock, msg, sizeof(msg), 0) > 0) {
         if (std::strlen(msg) > std::strlen(tell_name)) {
             char pre_name[13];
             strncpy_s(pre_name, msg, 12);
-
             pre_name[12] = '\0';
             if (std::strcmp(pre_name, tell_name) == 0) {
                 char name[20];
                 strcpy_s(name, msg + 12);
                 if (clnt_socks.find(name) == clnt_socks.end()) {
                     output("The name of socket %d: %s\n", clnt_sock, name);
+                    mtx.lock();
                     clnt_socks[name] = clnt_sock;
-                }
-                else {
+
+                    // Send chat history to the new client
+                    std::string history = get_chat_history();
+                    send(clnt_sock, history.c_str(), history.length() + 1, 0);
+
+                    mtx.unlock();
+                } else {
                     std::string error_msg = std::string(name) + " exists already. Please quit and enter with another name!";
                     send(clnt_sock, error_msg.c_str(), error_msg.length() + 1, 0);
                     mtx.lock();
                     clnt_cnt--;
                     mtx.unlock();
-                    flag = 1;
+                    closesocket(clnt_sock);
+                    return;
                 }
             }
         }
 
-        if (flag == 0)
+        if (std::string(msg) == "quit" || std::string(msg) == "Quit") {
+            quit_flag = true;
+        } else {
             send_msg(std::string(msg));
+            save_msg_to_history(std::string(msg)); // Save message to history
+        }
     }
-    if (flag == 0) {
+
+    if (quit_flag) {
         std::string leave_msg;
         std::string name;
         mtx.lock();
         for (auto it = clnt_socks.begin(); it != clnt_socks.end(); ++it) {
             if (it->second == clnt_sock) {
                 name = it->first;
-                clnt_socks.erase(it->first);
+                clnt_socks.erase(it);
+                break;
             }
         }
         clnt_cnt--;
         mtx.unlock();
         leave_msg = "Client " + name + " leaves the chat room";
         send_msg(leave_msg);
+        save_msg_to_history(leave_msg); // Save leave message to history
         output("Client %s leaves the chat room\n", name.c_str());
-        closesocket(clnt_sock);
     }
-    else {
-        closesocket(clnt_sock);
-    }
+
+    closesocket(clnt_sock);
 }
 
 void send_msg(const std::string& msg) {
@@ -167,6 +174,29 @@ void send_msg(const std::string& msg) {
     mtx.unlock();
 }
 
+void save_msg_to_history(const std::string& msg) {
+    std::ofstream file(HISTORY_FILE, std::ios::app);
+    if (file.is_open()) {
+        file << msg << std::endl;
+        file.close();
+    } else {
+        error_output("Failed to open history file for writing.\n");
+    }
+}
+
+std::string get_chat_history() {
+    std::ifstream file(HISTORY_FILE);
+    std::string history, line;
+    if (file.is_open()) {
+        while (getline(file, line)) {
+            history += line + "\n";
+        }
+        file.close();
+    } else {
+        error_output("Failed to open history file for reading.\n");
+    }
+    return history;
+}
 
 int output(const char* arg, ...) {
     int res;
