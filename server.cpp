@@ -8,14 +8,13 @@
 #include <fstream>
 
 #define SERVER_PORT 5208 // Порт сервера
-#define BUF_SIZE 1024  //буфер будет иметь размер 1024 байта
-#define MAX_CLNT 256    // Максимальное количество подключений
-#define HISTORY_FILE "chat_history.txt" // Файл для хранения истории сообщений
+#define BUF_SIZE 1024    // Буфер будет иметь размер 1024 байта
+#define MAX_CLNT 256     // Максимальное количество подключений
 
 void handle_clnt(SOCKET clnt_sock);
-void send_msg(const std::string& msg);
-void save_msg_to_history(const std::string& msg);
-std::string get_chat_history();
+void send_msg(const std::string& msg, const std::string& sender = "");
+void save_msg_to_history(const std::string& msg, const std::string& client_name);
+std::string get_chat_history(const std::string& client_name);
 int output(const char* arg, ...);
 int error_output(const char* arg, ...);
 void error_handling(const std::string& message);
@@ -24,8 +23,7 @@ int clnt_cnt = 0;
 std::mutex mtx;
 std::unordered_map<std::string, SOCKET> clnt_socks;
 
-int main(int argc, const char** argv) {
-    //Запуск программных интерфейсов для работы с сокетами
+int main() {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         error_handling("WSAStartup() failed!");
@@ -36,6 +34,7 @@ int main(int argc, const char** argv) {
     serv_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (serv_sock == INVALID_SOCKET) {
         error_handling("socket() failed!");
+        WSACleanup();
         return 1;
     }
 
@@ -47,6 +46,8 @@ int main(int argc, const char** argv) {
 
     if (bind(serv_sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) == SOCKET_ERROR) {
         error_handling("bind() failed!");
+        closesocket(serv_sock);
+        WSACleanup();
         return 1;
     }
 
@@ -54,6 +55,8 @@ int main(int argc, const char** argv) {
 
     if (listen(serv_sock, MAX_CLNT) == SOCKET_ERROR) {
         error_handling("listen() error!");
+        closesocket(serv_sock);
+        WSACleanup();
         return 1;
     }
 
@@ -66,10 +69,6 @@ int main(int argc, const char** argv) {
             error_handling("accept() failed!");
             continue;
         }
-
-        mtx.lock();
-        clnt_cnt++;
-        mtx.unlock();
 
         std::thread th(handle_clnt, clnt_sock);
         th.detach();
@@ -85,69 +84,63 @@ int main(int argc, const char** argv) {
 void handle_clnt(SOCKET clnt_sock) {
     char msg[BUF_SIZE];
     bool quit_flag = false;
+    std::string client_name;
 
-    char tell_name[13] = "#new client:";
     while (!quit_flag && recv(clnt_sock, msg, sizeof(msg), 0) > 0) {
-        if (std::strlen(msg) > std::strlen(tell_name)) {
-            char pre_name[13];
-            strncpy_s(pre_name, msg, 12);
-            pre_name[12] = '\0';
-            if (std::strcmp(pre_name, tell_name) == 0) {
-                char name[20];
-                strcpy_s(name, msg + 12);
-                if (clnt_socks.find(name) == clnt_socks.end()) {
-                    output("The name of socket %d: %s\n", clnt_sock, name);
-                    mtx.lock();
-                    clnt_socks[name] = clnt_sock;
+        std::string message(msg);
+        if (message.find("#new client:") == 0) {
+            client_name = message.substr(12);
+            if (clnt_socks.find(client_name) == clnt_socks.end()) {
+                output("The name of socket %d: %s\n", clnt_sock, client_name.c_str());
+                mtx.lock();
+                clnt_socks[client_name] = clnt_sock;
 
-                    // Send chat history to the new client
-                    std::string history = get_chat_history();
-                    send(clnt_sock, history.c_str(), history.length() + 1, 0);
-
-                    mtx.unlock();
-                } else {
-                    std::string error_msg = std::string(name) + " exists already. Please quit and enter with another name!";
-                    send(clnt_sock, error_msg.c_str(), error_msg.length() + 1, 0);
-                    mtx.lock();
-                    clnt_cnt--;
-                    mtx.unlock();
-                    closesocket(clnt_sock);
-                    return;
+                // Check if history file exists, if not create it
+                std::ofstream file(client_name + "_history.txt", std::ios::app);
+                if (!file.is_open()) {
+                    error_output("Failed to create history file.\n");
                 }
-            }
-        }
+                file.close();
 
-        if (std::string(msg) == "quit" || std::string(msg) == "Quit") {
+                // Send chat history to the new client
+                std::string history = get_chat_history(client_name);
+                send(clnt_sock, history.c_str(), history.length() + 1, 0);
+
+                // Send general chat history to the new client
+                std::string general_history = get_chat_history("general");
+                send(clnt_sock, general_history.c_str(), general_history.length() + 1, 0);
+
+                mtx.unlock();
+            } else {
+                std::string error_msg = client_name + " exists already. Please quit and enter with another name!";
+                send(clnt_sock, error_msg.c_str(), error_msg.length() + 1, 0);
+                closesocket(clnt_sock);
+                return;
+            }
+        } else if (message == "quit" || message == "Quit") {
             quit_flag = true;
         } else {
-            send_msg(std::string(msg));
-            save_msg_to_history(std::string(msg)); // Save message to history
+            send_msg(message, client_name);
+            save_msg_to_history(message, client_name);
         }
     }
 
     if (quit_flag) {
-        std::string leave_msg;
-        std::string name;
-        mtx.lock();
-        for (auto it = clnt_socks.begin(); it != clnt_socks.end(); ++it) {
-            if (it->second == clnt_sock) {
-                name = it->first;
-                clnt_socks.erase(it);
-                break;
-            }
-        }
-        clnt_cnt--;
-        mtx.unlock();
-        leave_msg = "Client " + name + " leaves the chat room";
-        send_msg(leave_msg);
-        save_msg_to_history(leave_msg); // Save leave message to history
-        output("Client %s leaves the chat room\n", name.c_str());
-    }
+        std::string leave_msg = "Client " + client_name + " leaves the chat room";
+        send_msg(leave_msg, client_name);
+        save_msg_to_history(leave_msg, client_name);
+        output("Client %s leaves the chat room\n", client_name.c_str());
 
-    closesocket(clnt_sock);
+        mtx.lock();
+        clnt_socks.erase(client_name);
+        mtx.unlock();
+
+        closesocket(clnt_sock);
+    }
 }
 
-void send_msg(const std::string& msg) {
+
+void send_msg(const std::string& msg, const std::string& sender) {
     mtx.lock();
     std::string pre = "@";
     int first_space = msg.find_first_of(" ");
@@ -161,21 +154,31 @@ void send_msg(const std::string& msg) {
                 send(clnt_socks[send_name], error_msg.c_str(), error_msg.length() + 1, 0);
             }
             else {
+                // Send message to the recipient
                 send(clnt_socks[receive_name], msg.c_str(), msg.length() + 1, 0);
-                send(clnt_socks[send_name], msg.c_str(), msg.length() + 1, 0);
+
+                // Save message to sender's history
+                save_msg_to_history(msg, send_name);
             }
         }
-    }
-    else {
+    } else {
+        // Send message to all clients (excluding sender)
         for (auto& client : clnt_socks) {
-            send(client.second, msg.c_str(), msg.length() + 1, 0);
+            if (client.first != sender) {
+                send(client.second, msg.c_str(), msg.length() + 1, 0);
+            }
         }
+
+        // Save message to general history
+        save_msg_to_history(msg, "general");
     }
     mtx.unlock();
 }
 
-void save_msg_to_history(const std::string& msg) {
-    std::ofstream file(HISTORY_FILE, std::ios::app);
+
+void save_msg_to_history(const std::string& msg, const std::string& client_name) {
+    std::string file_name = client_name + "_history.txt";
+    std::ofstream file(file_name, std::ios::app);
     if (file.is_open()) {
         file << msg << std::endl;
         file.close();
@@ -184,8 +187,9 @@ void save_msg_to_history(const std::string& msg) {
     }
 }
 
-std::string get_chat_history() {
-    std::ifstream file(HISTORY_FILE);
+std::string get_chat_history(const std::string& client_name) {
+    std::string file_name = client_name + "_history.txt";
+    std::ifstream file(file_name);
     std::string history, line;
     if (file.is_open()) {
         while (getline(file, line)) {
