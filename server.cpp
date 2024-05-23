@@ -106,16 +106,12 @@ void handle_clnt(SOCKET clnt_sock) {
                 std::string history = get_chat_history(client_name);
                 send(clnt_sock, history.c_str(), history.length() + 1, 0);
 
+
                 // Send general chat history to the new client
                 std::string general_history = get_chat_history("general");
                 send(clnt_sock, general_history.c_str(), general_history.length() + 1, 0);
 
                 mtx.unlock();
-            } else {
-                std::string error_msg = client_name + " exists already. Please quit and enter with another name!";
-                send(clnt_sock, error_msg.c_str(), error_msg.length() + 1, 0);
-                closesocket(clnt_sock);
-                return;
             }
         } else if (message == "quit" || message == "Quit") {
             quit_flag = true;
@@ -138,6 +134,8 @@ void handle_clnt(SOCKET clnt_sock) {
         closesocket(clnt_sock);
     }
 }
+
+
 
 
 void send_msg(const std::string& msg, const std::string& sender) {
